@@ -1,78 +1,86 @@
 # RefSeqTrain
 
-[![⭐ OpenReward Environment](https://img.shields.io/badge/%E2%AD%90%20OpenReward-Environment-f7e6cc)](https://openreward.ai/GeneralReasoning/RefSeqTrain)
+[![OpenReward Environment](https://img.shields.io/badge/%E2%AD%90%20OpenReward-Environment-f7e6cc)](https://openreward.ai/GeneralReasoning/RefSeqTrain)
 
 ## Description
 
-RefSeqTrain is a training environment for genomics question answering about NCBI RefSeq and Gene database records. Agents are given questions about specific verifiable facts from RefSeq gene, transcript, and protein records and must use web search to find and verify answers from NCBI.
+RefSeqTrain is a training environment for genomics question answering about NCBI [RefSeq](https://www.ncbi.nlm.nih.gov/refseq/) and [Gene](https://www.ncbi.nlm.nih.gov/gene/) database records. Each question asks about a specific verifiable fact from a gene, transcript, or protein record (e.g. sequence lengths, exon counts, chromosomal locations, CDS ranges, protein domains). Questions are designed to be specific enough that they can only be answered by looking up the correct NCBI record, and answers require navigating the RefSeq and Gene databases via web search.
 
 ## Capabilities
 
-- Researching gene, transcript, and protein metadata from NCBI RefSeq
-- Extracting specific information from genomic records (sequence lengths, exon counts, chromosomal locations, CDS ranges, etc.)
-- Navigating NCBI Gene, nucleotide, and protein databases
-- Cross-species genomic queries across human, mouse, rat, zebrafish, and other model organisms
+- Question answering from NCBI RefSeq and Gene database records
+- Web search and information retrieval from genomic databases
+- Multi-step research: searching, reading NCBI records, and extracting precise facts
+- Cross-species genomic queries across human, mouse, rat, zebrafish, fruit fly, and nematode
 
 ## Compute Requirements
 
-No sandbox or special compute requirements. Uses external web search (Tavily API) for NCBI retrieval.
+Agents are given a standard environment with no sandbox or file system access.
 
 ## License
 
-[ORLv1](https://openreward.ai/orlv1.md).
+[MIT](https://opensource.org/licenses/MIT).
 
 ## Tasks
 
-Training tasks are distributed across 10 genomics domains:
+There is one split: **train** with 1,000 tasks spanning 10 genomics domains:
 
-| Domain | Description |
-|--------|-------------|
-| `transcript_metadata` | mRNA lengths, accession types (NM/XM/NR) |
-| `protein_metadata` | Protein lengths, accession types (NP/XP) |
-| `gene_transcript_relationships` | Isoform counts, transcript variants |
-| `coding_sequence` | CDS ranges, reading frames |
-| `exon_structure` | Exon counts, exon architecture |
-| `chromosomal_location` | Chromosome, band, coordinates, strand |
-| `gene_nomenclature` | Full names, symbols, aliases |
-| `cross_species` | Orthologs across model organisms |
-| `protein_features` | Domains, signal peptides, annotations |
-| `functional_annotation` | Gene summaries, RefSeq status, pathways |
+| Domain | Count | Description |
+|--------|-------|-------------|
+| `transcript_metadata` | 100 | mRNA lengths, accession types (NM/XM/NR) |
+| `protein_metadata` | 100 | Protein lengths, accession types (NP/XP) |
+| `gene_transcript_relationships` | 100 | Isoform counts, transcript variants |
+| `coding_sequence` | 100 | CDS ranges, reading frames |
+| `exon_structure` | 100 | Exon counts, exon architecture |
+| `chromosomal_location` | 100 | Chromosome, band, coordinates |
+| `gene_nomenclature` | 100 | Full names, symbols, aliases |
+| `cross_species` | 100 | Orthologs across model organisms |
+| `protein_features` | 100 | Domains, signal peptides, annotations |
+| `functional_annotation` | 100 | Gene summaries, pathways, map locations |
+
+Each task provides a question and metadata (accession, source NCBI URL, domain, question type). The agent prompt contains only the question; the agent must find the answer through web search and NCBI record retrieval.
 
 ## Reward Structure
 
-Sparse, binary reward:
-- **1.0** for correct answers (as judged by LLM grader)
-- **0.0** for incorrect or unsure answers
+Reward is sparse and binary, emitted only when the agent calls `submit_answer` (which ends the episode). The `web_search` and `fetch_url` tools always return reward 0.0 and do not end the episode.
 
-Grading uses semantic equivalence checking via gpt-5-mini.
+On submission, the agent's answer is evaluated by an LLM grader (gpt-5-mini) that checks semantic equivalence against the reference answer. The grader accounts for equivalent numeric formats, abbreviations, and minor formatting differences. Empty or whitespace-only submissions receive reward 0.0 without invoking the grader.
+
+- **1.0**: Submitted answer is semantically equivalent to the reference answer
+- **0.0**: Submitted answer is incorrect, missing, or empty
 
 ## Data
 
-Ground-truth data consists of QA pairs derived from NCBI RefSeq and Gene database records. Each task includes a question, expected answer, source NCBI URL, accession, key passage, and domain. Data is stored on the OpenReward platform.
+Data consists of a single JSONL file containing 1,000 QA pairs generated from NCBI RefSeq and Gene database records. Each row contains a question, answer, source NCBI URL, accession, key passage from the record, domain, and question type. Data is stored on the OpenReward platform.
 
 ## Tools
 
 | Tool | Description |
 |------|-------------|
-| `web_search` | Search the web using Tavily. Returns titles, URLs, and snippets. |
+| `web_search` | Search the web using Tavily API. Returns up to 5 results with titles, URLs, and snippets. |
 | `fetch_url` | Fetch full text content from a URL. Supports pagination for long documents. |
-| `submit_answer` | Submit a final answer with explanation. Triggers LLM grading and ends the episode. |
+| `submit_answer` | Submit a final answer with explanation for LLM grading. Ends the episode. |
 
 ## Time Horizon
 
-Multi-turn. Agents typically perform several web searches and URL fetches before submitting an answer.
+Multi-turn. Agents can perform multiple web searches and URL fetches before submitting a final answer.
+
+## Environment Difficulty
+
+[To be determined]
 
 ## Other Environment Requirements
 
-This environment requires the following API keys passed via the `secrets` parameter:
-- `openai_api_key`: For LLM-based answer grading
-- `tavily_api_key`: For web search and URL content extraction
+- OpenAI API key required for LLM-based grading. Pass via `secrets={"openai_api_key": "..."}`.
+- Tavily API key required for web search and URL fetching. Pass via `secrets={"tavily_api_key": "..."}`.
 
 ## Safety
 
-RefSeqTrain focuses on factual information retrieval from publicly available NCBI genomic records. The environment does not involve access to non-public data or sensitive personal genomic information.
+Agents in RefSeqTrain answer genomics questions using web search in a standard environment. The environment focuses on factual information retrieval from publicly available NCBI genomic records and does not involve access to non-public data or sensitive personal genomic information. The environment does not present direct safety risks.
 
 ## Citations
+
+RefSeqTrain uses data derived from the NCBI RefSeq database. Please cite the original RefSeq publication:
 
 ```bibtex
 @article{oleary2016refseq,
