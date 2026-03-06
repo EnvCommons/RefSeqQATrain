@@ -1,0 +1,119 @@
+# RefSeqTrain Reference Examples
+
+These examples demonstrate the style and format for RefSeq QA pairs.
+Questions should be verifiable from NCBI Gene, nucleotide, or protein records.
+Questions MUST have distinctive specificity -- the answer should be uniquely
+traceable to a specific RefSeq record or Gene entry.
+
+---
+
+## Example 1: Transcript Length (transcript_metadata)
+
+Question: What is the cDNA sequence length in base pairs for the Homo sapiens TP53 RefSeq transcript NM_000546.6?
+
+Answer: 2,512 bp
+
+Source: https://www.ncbi.nlm.nih.gov/nuccore/NM_000546.6
+
+Key Passage: Homo sapiens tumor protein p53 (TP53), transcript variant 1, mRNA. ACCESSION NM_000546. VERSION NM_000546.6. 2512 bp mRNA linear PRI.
+
+Domain: transcript_metadata
+Question Type: sequence_length
+
+---
+
+## Example 2: Chromosomal Location (chromosomal_location)
+
+Question: On which chromosomal band is the human EGFR gene (Gene ID 1956) located according to NCBI Gene?
+
+Answer: 7p11.2
+
+Source: https://www.ncbi.nlm.nih.gov/gene/1956
+
+Key Passage: Chromosome: 7; Location: 7p11.2
+
+Domain: chromosomal_location
+Question Type: chromosomal_location
+
+---
+
+## Example 3: Exon Count (exon_structure)
+
+Question: How many exons does the human BRCA1 gene (Gene ID 672) contain according to its NCBI Gene record?
+
+Answer: 31 exons
+
+Source: https://www.ncbi.nlm.nih.gov/gene/672
+
+Key Passage: Exon count: 31
+
+Domain: exon_structure
+Question Type: exon_count
+
+---
+
+## Example 4: Gene Full Name (gene_nomenclature)
+
+Question: What is the official full gene name for the human gene with symbol LRRK2 according to NCBI Gene?
+
+Answer: leucine rich repeat kinase 2
+
+Source: https://www.ncbi.nlm.nih.gov/gene/120892
+
+Key Passage: Official Full Name: leucine rich repeat kinase 2
+
+Domain: gene_nomenclature
+Question Type: gene_name
+
+---
+
+## Example 5: Protein Product (protein_metadata)
+
+Question: How many amino acids long is the cellular tumor antigen p53 isoform a protein encoded by human TP53 (NP_000537.3)?
+
+Answer: 393 amino acids
+
+Source: https://www.ncbi.nlm.nih.gov/protein/NP_000537.3
+
+Key Passage: 393 aa protein linear PRI. cellular tumor antigen p53 isoform a [Homo sapiens].
+
+Domain: protein_metadata
+Question Type: protein_length
+
+---
+
+## Example 6: CDS Range (coding_sequence)
+
+Question: What is the CDS nucleotide range for the human TP53 transcript variant 1, NM_000546.6?
+
+Answer: 143..1324
+
+Source: https://www.ncbi.nlm.nih.gov/nuccore/NM_000546.6
+
+Key Passage: CDS 143..1324 /gene="TP53" /coded_by="NM_000546.6:143..1324"
+
+Domain: coding_sequence
+Question Type: cds_range
+
+---
+
+## Question Style Guidelines
+
+1. Questions MUST have distinctive specificity -- include gene symbol, accession number, organism, or Gene ID
+2. Answers should be verifiable by querying NCBI E-utilities or visiting the NCBI page
+3. Focus on specific facts: lengths, counts, locations, names, accessions, ranges
+4. Answers should be concise (under 200 characters)
+5. Include the source URL and key passage for verification
+
+## Question Types to Cover
+
+- sequence_length: mRNA/protein length in bp or aa
+- exon_count: Number of exons
+- chromosomal_location: Chromosome, band, coordinates
+- gene_name: Full official gene name, aliases
+- protein_product: Protein accession, product name
+- cds_range: CDS nucleotide coordinates
+- variant_count: Number of transcript variants/isoforms
+- organism: Species, taxonomy, orthologs
+- functional: Gene function summary, RefSeq status
+- domain_annotation: Protein domains, conserved regions
