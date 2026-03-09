@@ -4,7 +4,7 @@
 
 ## Description
 
-RefSeqTrain is a training environment for genomics question answering about NCBI [RefSeq](https://www.ncbi.nlm.nih.gov/refseq/) and [Gene](https://www.ncbi.nlm.nih.gov/gene/) database records. Each question asks about a specific verifiable fact from a gene, transcript, or protein record (e.g. sequence lengths, exon counts, chromosomal locations, CDS ranges, protein domains). Questions are designed to be specific enough that they can only be answered by looking up the correct NCBI record, and answers require navigating the RefSeq and Gene databases via web search.
+RefSeqTrain is an ORS training environment for genomics question answering about NCBI [RefSeq](https://www.ncbi.nlm.nih.gov/refseq/) and [Gene](https://www.ncbi.nlm.nih.gov/gene/) database records. Each question asks about a specific verifiable fact from a gene, transcript, or protein record (e.g. sequence lengths, exon counts, chromosomal locations, CDS ranges, protein domains). Questions are designed to be specific enough that they can only be answered by looking up the correct NCBI record, and answers require navigating the RefSeq and Gene databases via web search.
 
 ## Capabilities
 
