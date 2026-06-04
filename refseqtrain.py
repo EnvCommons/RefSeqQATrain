@@ -278,14 +278,42 @@ class RefSeqTrain(Environment):
         # no flat file; rettype=gene_table returns the per-transcript exon
         # listing (genomic/gene intervals, exon counts and lengths), which is
         # the authoritative gene-level exon source.
-        eutils = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+        eutils_base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
         params_q = {"db": db, "id": acc, "retmode": "text"}
         params_q["rettype"] = "gene_table" if db == "gene" else "gb"
 
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            resp = await client.get(eutils, params=params_q)
+            resp = await client.get(f"{eutils_base}/efetch.fcgi", params=params_q)
             resp.raise_for_status()
             text = resp.text
+
+            # The gene_table report omits the cytogenetic/genetic Map Location
+            # and chromosome -- the source for chromosomal_location questions.
+            # Prepend the gene esummary (the same field the dataset's expected
+            # answers are built from: esummary 'maplocation') so those tasks
+            # have a tool path to the answer.
+            if db == "gene":
+                try:
+                    sresp = await client.get(
+                        f"{eutils_base}/esummary.fcgi",
+                        params={"db": "gene", "id": acc, "retmode": "json"},
+                    )
+                    sresp.raise_for_status()
+                    g = sresp.json().get("result", {}).get(acc, {})
+                    if g and "error" not in g:
+                        header = (
+                            "NCBI Gene summary\n"
+                            f"Gene ID: {acc}\n"
+                            f"Symbol: {g.get('name', '')}\n"
+                            f"Description: {g.get('description', '')}\n"
+                            f"Organism: {g.get('organism', {}).get('scientificname', '')}\n"
+                            f"Chromosome: {g.get('chromosome', '')}\n"
+                            f"Map Location: {g.get('maplocation', '')}\n\n"
+                        )
+                        text = header + text
+                except Exception:
+                    pass  # fall back to the gene_table content alone
+
         return text or None
 
     @tool
