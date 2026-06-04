@@ -12,8 +12,10 @@ cross-species comparisons, protein features, and functional annotation.
 import json
 import re
 import openai
+import httpx
 from pydantic import BaseModel, Field
 from typing import Dict, List
+from urllib.parse import urlparse, parse_qs
 
 from tavily import AsyncTavilyClient
 
@@ -229,29 +231,126 @@ class RefSeqTrain(Environment):
                 finished=False
             )
 
+    async def _fetch_ncbi_authoritative(self, url: str) -> str | None:
+        """
+        Retrieve authoritative NCBI record content over plain HTTP.
+
+        Tavily's extract() scrapes rendered HTML, but NCBI's nuccore/gene/protein
+        pages serve only a JavaScript-disabled shell (the FEATURES/exon table is
+        client-rendered), and Tavily drops non-HTML E-utilities bodies entirely
+        ("No content extracted"). For any NCBI URL we instead resolve the
+        accession and pull the GenBank flat file directly from E-utilities
+        efetch, which returns the full feature table (incl. exon records) as
+        text/plain over a normal HTTP GET.
+
+        Returns the flat-file text, or None if this isn't an NCBI URL / no
+        accession could be resolved (caller then falls back to Tavily).
+        """
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        if "ncbi.nlm.nih.gov" not in host:
+            return None
+
+        db = "nuccore"
+        acc = None
+
+        # E-utilities efetch links: honour their own db/id/rettype query params.
+        if "eutils" in host and "efetch" in parsed.path:
+            qs = parse_qs(parsed.query)
+            ids = qs.get("id", [])
+            acc = ids[0].split(",")[0] if ids else None
+            db = (qs.get("db", [db])[0]) or db
+        else:
+            # Web pages like /nuccore/NM_004958.4, /gene/2475, /protein/NP_...
+            # Resolve the database from the path and the accession from the
+            # path tail (strip any ?report=... / #... fragments).
+            m = re.search(r"/(nuccore|gene|protein|nucleotide)/([^/?#]+)", parsed.path)
+            if m:
+                path_db = m.group(1)
+                acc = m.group(2)
+                db = {"nucleotide": "nuccore"}.get(path_db, path_db)
+
+        if not acc:
+            return None
+
+        # For sequence records (nuccore/protein) pull the full GenBank flat file
+        # so the FEATURES/exon table is present. For a numeric Gene ID there is
+        # no flat file; rettype=gene_table returns the per-transcript exon
+        # listing (genomic/gene intervals, exon counts and lengths), which is
+        # the authoritative gene-level exon source.
+        eutils = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+        params_q = {"db": db, "id": acc, "retmode": "text"}
+        params_q["rettype"] = "gene_table" if db == "gene" else "gb"
+
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            resp = await client.get(eutils, params=params_q)
+            resp.raise_for_status()
+            text = resp.text
+        return text or None
+
     @tool
     async def fetch_url(self, params: FetchUrlInput) -> ToolOutput:
         """
-        Fetch and return the text content from a specific URL using Tavily's extract method.
-        Use this to read NCBI Gene, nucleotide, or protein pages.
+        Fetch and return the text content from a specific URL.
+
+        For NCBI URLs (nuccore/nucleotide, gene, protein pages, or E-utilities
+        efetch links) this retrieves the authoritative GenBank flat file via
+        NCBI E-utilities, so the FEATURES table — including exon records, CDS
+        ranges, and other annotations — is delivered as plain text. (The public
+        NCBI web pages only serve a JavaScript-disabled shell, so scraping their
+        HTML yields no record content.) For all other URLs it uses Tavily's
+        extract method to pull rendered text.
+
         Content is paginated - use the page parameter to retrieve additional pages.
         """
         PAGE_SIZE = 10000
 
         try:
-            response = await self.tavily_client.extract(urls=[params.url])
+            # Prefer the authoritative E-utilities flat file for NCBI records
+            raw_content = None
+            try:
+                raw_content = await self._fetch_ncbi_authoritative(params.url)
+            except Exception:
+                raw_content = None
 
-            results = response.get("results", [])
-            if not results:
-                return ToolOutput(
-                    blocks=[TextBlock(type="text", text=f"No content extracted from {params.url}")],
-                    metadata={"url": params.url, "results": []},
-                    reward=0.0,
-                    finished=False
+            if raw_content is None:
+                response = await self.tavily_client.extract(
+                    urls=[params.url],
+                    extract_depth="advanced",
+                    format="text",
                 )
+                results = response.get("results", [])
+                if not results:
+                    # Tavily produced no result object at all — usually a fetch
+                    # failure (DNS/timeout/blocked) or an unsupported URL.
+                    return ToolOutput(
+                        blocks=[TextBlock(type="text", text=(
+                            f"Could not fetch {params.url}: the extractor returned "
+                            f"no result. The URL may be unreachable, blocked, or "
+                            f"invalid. Try a different source or an NCBI record URL."
+                        ))],
+                        metadata={"url": params.url, "results": []},
+                        reward=0.0,
+                        finished=False
+                    )
+                raw_content = results[0].get("raw_content", "") or ""
+                if not raw_content.strip():
+                    # A result came back but with no usable text — typically a
+                    # JavaScript-gated page that renders content client-side, so
+                    # the extractor saw only an empty shell. Surface that so the
+                    # agent can pick a different (e.g. API/flat-file) source.
+                    return ToolOutput(
+                        blocks=[TextBlock(type="text", text=(
+                            f"No readable text could be extracted from {params.url}. "
+                            f"The page appears to be JavaScript-gated or otherwise "
+                            f"served no content to the extractor. Try the record's "
+                            f"NCBI page or a direct data/API endpoint instead."
+                        ))],
+                        metadata={"url": params.url, "results": results, "empty_content": True},
+                        reward=0.0,
+                        finished=False
+                    )
 
-            result = results[0]
-            raw_content = result.get("raw_content", "")
             total_length = len(raw_content)
 
             total_pages = max(1, (total_length + PAGE_SIZE - 1) // PAGE_SIZE)
