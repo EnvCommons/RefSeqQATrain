@@ -19,7 +19,7 @@ from urllib.parse import urlparse, parse_qs
 
 from tavily import AsyncTavilyClient
 
-from openreward.environments import Environment, JSONObject, TextBlock, ToolOutput, tool
+from openreward.environments import Environment, JSONObject, TextBlock, ToolOutput, terminal, tool
 
 from constants import REFSEQTRAIN_JSONL
 
@@ -73,13 +73,11 @@ class FetchUrlInput(BaseModel):
 
 
 class SubmitAnswerParams(BaseModel):
-    explanation: str = Field(
-        ...,
-        description="Your reasoning showing how you found and verified the answer (2-4 sentences)"
-    )
+    # A terminal tool takes at most one field — the assistant's final message,
+    # which carries both the answer and whatever reasoning it chose to show.
     answer: str = Field(
         ...,
-        description="The precise answer to the RefSeq question"
+        description="The assistant's final message, containing the answer to the RefSeq question"
     )
 
 
@@ -131,8 +129,9 @@ class RefSeqTrain(Environment):
     1. Receives a question about a specific RefSeq/Gene record
     2. Uses web_search tool to find relevant NCBI information
     3. Uses fetch_url tool to get detailed record content from NCBI
-    4. Submits answer with explanation for LLM-based grading
-    5. Receives reward (1.0 correct, 0.0 incorrect) and feedback
+    4. Writes its final answer as a plain message (no tool call)
+    5. The harness routes that message to the hidden @terminal tool, which
+       grades it with an LLM judge and returns a reward (1.0 / 0.0)
     """
 
     def __init__(self, task_spec: JSONObject, secrets: dict[str, str] = {}) -> None:
@@ -180,7 +179,7 @@ class RefSeqTrain(Environment):
         ]
 
     def get_prompt(self) -> list[TextBlock]:
-        return [TextBlock(type="text", text=self.config.question + "\n\n" + "Use the submit_answer tool to submit your answer when ready.")]
+        return [TextBlock(type="text", text=self.config.question + "\n\n" + "Research the question with the tools available, then reply with your final answer as an ordinary message (no tool call). That message is graded.")]
 
     @tool
     async def web_search(self, params: WebSearchInput) -> ToolOutput:
@@ -444,13 +443,15 @@ class RefSeqTrain(Environment):
             "grading_response": grading_text
         }
 
+    @terminal
     @tool
     async def submit_answer(self, params: SubmitAnswerParams) -> ToolOutput:
         """
-        Submit your final answer to the RefSeq question.
+        Grade the assistant's final message against the expected RefSeq answer.
 
-        This tool grades your answer using an LLM judge and returns a reward.
-        The episode ends after calling this tool.
+        Terminal tool: it is hidden from the agent, which simply writes its
+        answer as an ordinary message. The harness routes that text here for
+        LLM grading, and the episode ends.
         """
         grading_result = await self._grade_answer(params.answer)
 
@@ -476,7 +477,6 @@ Source: {self.config.source_url}"""
                 "is_correct": grading_result["is_correct"],
                 "grading_response": grading_result["grading_response"],
                 "submitted_answer": params.answer,
-                "submitted_explanation": params.explanation,
                 "correct_answer": self.config.answer,
                 "question": self.config.question,
                 "source_url": self.config.source_url,
