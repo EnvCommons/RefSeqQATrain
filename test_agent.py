@@ -1,7 +1,7 @@
 """Agent loop for RefSeqTrain.
 
 RefSeqTrain uses a @terminal tool: the grading tool is hidden from the model,
-which researches with web_search / fetch_url and then simply writes its answer
+which researches with web_search / web_fetch and then simply writes its answer
 as an ordinary message. The harness sees a message with no tool calls and
 routes its text to session.call_terminal_tool(), which grades it.
 
@@ -42,8 +42,13 @@ async def main():
     ENV_NAME = "GeneralReasoning/RefSeqTrain"
     SPLIT = "train"
     NUM_TASKS = int(os.environ.get("NUM_TASKS", "2"))
+    # Env var, not a constant: a low cap silently records correct answers as
+    # `null` instead of scoring them. See SKILL.md verification step 4.
+    MAX_TURNS = int(os.environ.get("MAX_TURNS", "40"))
     OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-    TAVILY_API_KEY = os.environ["TAVILY_API_KEY"]
+    # Optional: whichever the server's OPENREWARD_SEARCH_BACKEND needs.
+    TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
+    OPENREWARD_API_KEY = os.environ.get("OPENREWARD_API_KEY", "")
 
     # Deployed environment unless LOCAL=1.
     base_url = "http://localhost:8080" if os.environ.get("LOCAL") else None
@@ -92,7 +97,8 @@ async def main():
             task=task,
             secrets={
                 "openai_api_key": OPENAI_API_KEY,
-                "tavily_api_key": TAVILY_API_KEY,
+                **({"tavily_api_key": TAVILY_API_KEY} if TAVILY_API_KEY else {}),
+                **({"api_key": OPENREWARD_API_KEY} if OPENREWARD_API_KEY else {}),
             },
         ) as session:
             # The whole point: ask the environment which convention it uses.
@@ -118,9 +124,8 @@ async def main():
 
             reward = None
             turn = 0
-            max_turns = 12
 
-            while turn < max_turns:
+            while turn < MAX_TURNS:
                 turn += 1
                 print(f"\n--- Turn {turn} ---")
 

@@ -17,9 +17,10 @@ from pydantic import BaseModel, Field
 from typing import Dict, List
 from urllib.parse import urlparse, parse_qs
 
-from tavily import AsyncTavilyClient
 
 from openreward.environments import Environment, JSONObject, TextBlock, ToolOutput, terminal, tool
+from openreward.toolsets import WebToolset
+from openreward.toolsets._web_common import WebFetchParams
 
 from constants import REFSEQTRAIN_JSONL
 
@@ -63,13 +64,41 @@ class RefSeqQATaskSpec(BaseModel):
     question_type: str
 
 
-class WebSearchInput(BaseModel):
-    query: str = Field(..., description="Search query to find RefSeq/gene information on NCBI")
+MAX_FETCH_CHARS = 100_000
 
 
-class FetchUrlInput(BaseModel):
-    url: str = Field(..., description="URL to fetch (e.g., NCBI Gene, nucleotide, or protein page)")
-    page: int = Field(default=1, description="Page number to retrieve (1-indexed). Each page contains ~10,000 characters.")
+class NcbiWebToolset(WebToolset):
+    """WebToolset whose web_fetch prefers NCBI's authoritative records.
+
+    Subclassing rather than defining web_fetch on the environment: the framework
+    rejects a tool name defined in both an environment and its toolset, so the
+    override has to live here. web_search is inherited unchanged.
+
+    NCBI's nuccore/gene/protein pages serve a JavaScript-only shell, and their
+    E-utilities responses are not HTML, so a generic extractor returns nothing
+    usable for exactly the records these tasks are about. Those URLs go to
+    E-utilities; everything else falls through to the configured backend.
+    """
+
+    @tool
+    async def web_fetch(self, params: WebFetchParams) -> ToolOutput:
+        try:
+            raw = await self.env._fetch_ncbi_authoritative(params.url)
+        except Exception:
+            raw = None
+
+        if raw is None:
+            return await super().web_fetch(params)
+
+        text = raw[:MAX_FETCH_CHARS]
+        if len(raw) > MAX_FETCH_CHARS:
+            text += "\n... (truncated)"
+        return ToolOutput(
+            blocks=[TextBlock(type="text", text=f"Content from {params.url}:\n\n{text}")],
+            metadata={"url": params.url, "source": "ncbi-eutilities", "total_length": len(raw)},
+            reward=0.0,
+            finished=False,
+        )
 
 
 class SubmitAnswerParams(BaseModel):
@@ -128,11 +157,24 @@ class RefSeqTrain(Environment):
     Agent workflow:
     1. Receives a question about a specific RefSeq/Gene record
     2. Uses web_search tool to find relevant NCBI information
-    3. Uses fetch_url tool to get detailed record content from NCBI
+    3. Uses web_fetch tool to get detailed record content from NCBI
     4. Writes its final answer as a plain message (no tool call)
     5. The harness routes that message to the hidden @terminal tool, which
        grades it with an LLM judge and returns a reward (1.0 / 0.0)
     """
+
+    # web_search / web_fetch come from the SDK rather than being hand-rolled here.
+    # Which provider answers is process configuration (OPENREWARD_SEARCH_BACKEND,
+    # default "backsearch"), so changing search provider needs no change here.
+    #
+    # The toolset owns the error split too: an unfetchable page stays tool output
+    # the agent can act on, while a missing key or exhausted quota raises so the
+    # rollout ends with a blank reward rather than a score that reads as a bad answer.
+    toolsets = [NcbiWebToolset]
+
+    # Search hits keep their snippets, as the prompt promises. Off in the SDK by
+    # default, which would force a fetch per candidate just to triage results.
+    web_include_snippets = True
 
     def __init__(self, task_spec: JSONObject, secrets: dict[str, str] = {}) -> None:
         super().__init__(task_spec)
@@ -142,18 +184,16 @@ class RefSeqTrain(Environment):
         if not openai_api_key:
             raise ValueError(
                 "openai_api_key required in secrets parameter for LLM grading. "
-                "Pass secrets={'openai_api_key': 'sk-...', 'tavily_api_key': 'tvly-...'} when creating session."
+                "Pass secrets={'openai_api_key': 'sk-...'} when creating session."
             )
 
-        tavily_api_key = secrets.get("tavily_api_key")
-        if not tavily_api_key:
-            raise ValueError(
-                "tavily_api_key required in secrets parameter for web search. "
-                "Pass secrets={'openai_api_key': 'sk-...', 'tavily_api_key': 'tvly-...'} when creating session."
-            )
+        # Read live by WebToolset on every tool call, so the search backend takes its
+        # credentials from the session rather than the server process. The configured
+        # backend picks the key it needs: `api_key` for backsearch, `tavily_api_key`
+        # for tavily. No up-front check — which key is required depends on the backend.
+        self.search_secrets = secrets
 
         self.openai_client = openai.AsyncClient(api_key=openai_api_key)
-        self.tavily_client = AsyncTavilyClient(api_key=tavily_api_key)
 
     @classmethod
     def list_splits(cls) -> list[str]:
@@ -180,55 +220,6 @@ class RefSeqTrain(Environment):
 
     def get_prompt(self) -> list[TextBlock]:
         return [TextBlock(type="text", text=self.config.question + "\n\n" + "Research the question with the tools available, then reply with your final answer as an ordinary message (no tool call). That message is graded.")]
-
-    @tool
-    async def web_search(self, params: WebSearchInput) -> ToolOutput:
-        """
-        Search the web for RefSeq/gene information using Tavily.
-        Returns search results with titles, URLs, and snippets.
-        """
-        try:
-            response = await self.tavily_client.search(
-                query=params.query,
-                search_depth="basic",
-                max_results=5
-            )
-
-            results = response.get("results", [])
-            if not results:
-                return ToolOutput(
-                    blocks=[TextBlock(type="text", text="No search results found. Try a different query.")],
-                    metadata={"query": params.query, "results": []},
-                    reward=0.0,
-                    finished=False
-                )
-
-            display_parts = [f"Search results for: {params.query}\n"]
-            for i, result in enumerate(results, 1):
-                title = result.get("title", "No title")
-                url = result.get("url", "")
-                snippet = result.get("content", "")
-                display_parts.append(f"{i}. {title}\n   URL: {url}\n   {snippet}\n")
-
-            display_text = "\n".join(display_parts)
-
-            return ToolOutput(
-                blocks=[TextBlock(type="text", text=display_text)],
-                metadata={
-                    "query": params.query,
-                    "results": results,
-                    "count": len(results)
-                },
-                reward=0.0,
-                finished=False
-            )
-        except Exception as e:
-            return ToolOutput(
-                blocks=[TextBlock(type="text", text=f"Web search failed: {str(e)}")],
-                metadata={"query": params.query, "error": str(e)},
-                reward=0.0,
-                finished=False
-            )
 
     async def _fetch_ncbi_authoritative(self, url: str) -> str | None:
         """
@@ -314,106 +305,6 @@ class RefSeqTrain(Environment):
                     pass  # fall back to the gene_table content alone
 
         return text or None
-
-    @tool
-    async def fetch_url(self, params: FetchUrlInput) -> ToolOutput:
-        """
-        Fetch and return the text content from a specific URL.
-
-        For NCBI URLs (nuccore/nucleotide, gene, protein pages, or E-utilities
-        efetch links) this retrieves the authoritative GenBank flat file via
-        NCBI E-utilities, so the FEATURES table — including exon records, CDS
-        ranges, and other annotations — is delivered as plain text. (The public
-        NCBI web pages only serve a JavaScript-disabled shell, so scraping their
-        HTML yields no record content.) For all other URLs it uses Tavily's
-        extract method to pull rendered text.
-
-        Content is paginated - use the page parameter to retrieve additional pages.
-        """
-        PAGE_SIZE = 10000
-
-        try:
-            # Prefer the authoritative E-utilities flat file for NCBI records
-            raw_content = None
-            try:
-                raw_content = await self._fetch_ncbi_authoritative(params.url)
-            except Exception:
-                raw_content = None
-
-            if raw_content is None:
-                response = await self.tavily_client.extract(
-                    urls=[params.url],
-                    extract_depth="advanced",
-                    format="text",
-                )
-                results = response.get("results", [])
-                if not results:
-                    # Tavily produced no result object at all — usually a fetch
-                    # failure (DNS/timeout/blocked) or an unsupported URL.
-                    return ToolOutput(
-                        blocks=[TextBlock(type="text", text=(
-                            f"Could not fetch {params.url}: the extractor returned "
-                            f"no result. The URL may be unreachable, blocked, or "
-                            f"invalid. Try a different source or an NCBI record URL."
-                        ))],
-                        metadata={"url": params.url, "results": []},
-                        reward=0.0,
-                        finished=False
-                    )
-                raw_content = results[0].get("raw_content", "") or ""
-                if not raw_content.strip():
-                    # A result came back but with no usable text — typically a
-                    # JavaScript-gated page that renders content client-side, so
-                    # the extractor saw only an empty shell. Surface that so the
-                    # agent can pick a different (e.g. API/flat-file) source.
-                    return ToolOutput(
-                        blocks=[TextBlock(type="text", text=(
-                            f"No readable text could be extracted from {params.url}. "
-                            f"The page appears to be JavaScript-gated or otherwise "
-                            f"served no content to the extractor. Try the record's "
-                            f"NCBI page or a direct data/API endpoint instead."
-                        ))],
-                        metadata={"url": params.url, "results": results, "empty_content": True},
-                        reward=0.0,
-                        finished=False
-                    )
-
-            total_length = len(raw_content)
-
-            total_pages = max(1, (total_length + PAGE_SIZE - 1) // PAGE_SIZE)
-            page = max(1, min(params.page, total_pages))
-
-            start_idx = (page - 1) * PAGE_SIZE
-            end_idx = min(start_idx + PAGE_SIZE, total_length)
-            page_content = raw_content[start_idx:end_idx]
-
-            if total_pages == 1:
-                display_text = f"Content from {params.url}:\n\n{page_content}"
-            else:
-                display_text = f"Content from {params.url} (Page {page}/{total_pages}):\n\n{page_content}"
-                if page < total_pages:
-                    display_text += f"\n\n[Use fetch_url with page={page + 1} to see more content]"
-
-            return ToolOutput(
-                blocks=[TextBlock(type="text", text=display_text)],
-                metadata={
-                    "url": params.url,
-                    "page": page,
-                    "total_pages": total_pages,
-                    "total_length": total_length,
-                    "page_start": start_idx,
-                    "page_end": end_idx
-                },
-                reward=0.0,
-                finished=False
-            )
-        except Exception as e:
-            return ToolOutput(
-                blocks=[TextBlock(type="text", text=f"Failed to fetch URL: {str(e)}")],
-                metadata={"url": params.url, "error": str(e)},
-                reward=0.0,
-                finished=False
-            )
 
     async def _grade_answer(self, answer: str) -> Dict:
         """Grade answer using gpt-5-mini LLM grader."""

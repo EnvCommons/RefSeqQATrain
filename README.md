@@ -42,7 +42,7 @@ Each task provides a question and metadata (accession, source NCBI URL, domain, 
 
 ## Reward Structure
 
-Reward is sparse and binary, emitted only when the agent calls `submit_answer` (which ends the episode). The `web_search` and `fetch_url` tools always return reward 0.0 and do not end the episode.
+Reward is sparse and binary, emitted only when the agent calls `submit_answer` (which ends the episode). The `web_search` and `web_fetch` tools always return reward 0.0 and do not end the episode.
 
 On submission, the agent's answer is evaluated by an LLM grader (gpt-5-mini) that checks semantic equivalence against the reference answer. The grader accounts for equivalent numeric formats, abbreviations, and minor formatting differences. Empty or whitespace-only submissions receive reward 0.0 without invoking the grader.
 
@@ -57,11 +57,11 @@ Data consists of a single JSONL file containing 1,000 QA pairs generated from NC
 
 | Tool | Description |
 |------|-------------|
-| `web_search` | Search the web using Tavily API. Returns up to 5 results with titles, URLs, and snippets. |
-| `fetch_url` | Fetch full text content from a URL. Supports pagination for long documents. |
+| `web_search` | Search the web. Returns up to 5 results with titles, URLs, and snippets. |
+| `web_fetch` | Fetch full text content from a URL. Supports pagination for long documents. |
 | `submit_answer` | Submit a final answer with explanation for LLM grading. Ends the episode. |
 
-Note that the `fetch_url` and `web_search` tools require Tavily, but are optional. If you want to use a different provider for search you can exclude these tools and use external tools instead.
+Note that the `web_fetch` and `web_search` tools require Tavily, but are optional. If you want to use a different provider for search you can exclude these tools and use external tools instead.
 
 ## Time Horizon
 
@@ -74,7 +74,7 @@ Multi-turn. Agents can perform multiple web searches and URL fetches before subm
 ## Other Environment Requirements
 
 - OpenAI API key required for LLM-based grading. Pass via `secrets={"openai_api_key": "..."}`.
-- Tavily API key required for web search and URL fetching. Pass via `secrets={"tavily_api_key": "..."}`.
+- Search credentials — whichever the configured backend needs: `api_key` for the default backsearch backend, or `tavily_api_key` when the server runs with `OPENREWARD_SEARCH_BACKEND=tavily`. Both fall back to the server process environment (`OPENREWARD_API_KEY` / `TAVILY_API_KEY`).
 
 ## Safety
 

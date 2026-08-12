@@ -1,5 +1,4 @@
 openai>=1.0.0
-openreward
-tavily-python>=0.1.0
+openreward[search]>=0.1.153
 pydantic>=2.0.0
 httpx>=0.24.0
